@@ -14,17 +14,19 @@ logging.basicConfig(level=logging.INFO)
 TELEGRAM_TOKEN = "8716377272:AAGJAaCKwgS8z9yRAXB7_m6glYHr99VCPtA"
 CHAT_ID = 8771579075
 
-# Strategy Settings
+# Settings
+CHECK_INTERVAL_MIN = 15
+COOLDOWN_MINUTES = 180
+
+# BTC Settings
 STOCH_1H_OB = 80
 STOCH_4H_OB = 78
 RSI_MIN = 68
 
+# PAXG Settings
 PAXG_STOCH_1H = 83
 PAXG_STOCH_4H = 80
 PAXG_RSI_MIN = 70
-
-CHECK_INTERVAL_MIN = 15
-COOLDOWN_MINUTES = 180
 # ===========================================
 
 exchange = ccxt.binance({'enableRateLimit': True})
@@ -105,10 +107,10 @@ def check_signals():
                 
                 last_signal_time = datetime.now()
                 ob = analyze_order_book("BTC/USDT")
-                msg = f"🔴 <b>BTC STRONG SELL</b>\nBTC @ ${price:,.2f}\n"
+                msg = f"🔴 <b>BTC STRONG SELL SIGNAL</b>\nBTC @ ${price:,.2f}\n"
                 if ob and ob.get('best_sell'):
-                    msg += f"🎯 Best Sell: ${ob['best_sell']:,}\n"
-                msg += f"Time: {timestamp}\n→ Reduce alts"
+                    msg += f"🎯 Best Sell Zone: ${ob['best_sell']:,}\n"
+                msg += f"Time: {timestamp}\n→ Reduce exposure on alts"
                 send_message(msg)
     except:
         pass
@@ -130,9 +132,9 @@ def check_signals():
                 
                 last_signal_time = datetime.now()
                 ob_p = analyze_order_book("PAXG/USDT")
-                msg = f"🟡 <b>PAXG SELL (Gold)</b>\nPAXG @ ${price_p:,.2f}\n"
+                msg = f"🟡 <b>PAXG SELL SIGNAL (Gold)</b>\nPAXG @ ${price_p:,.2f}\n"
                 if ob_p and ob_p.get('best_sell'):
-                    msg += f"🎯 Best Sell: ${ob_p['best_sell']:,}\n"
+                    msg += f"🎯 Best Sell Zone: ${ob_p['best_sell']:,}\n"
                 msg += f"Time: {timestamp}\n→ Take profit on PAXG"
                 send_message(msg)
     except:
@@ -143,7 +145,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🤖 LiquidityExtractionbot Started!\nMonitoring BTC + PAXG", parse_mode='HTML')
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("/status\n/stop\n/startbot\n/checknow", parse_mode='HTML')
+    await update.message.reply_text("/status\n/stop\n/startbot\n/checknow\n/help", parse_mode='HTML')
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = "🟢 Running" if bot_running else "⭕ Paused"
@@ -152,7 +154,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def stop_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global bot_running
     bot_running = False
-    await update.message.reply_text("⭕ Signals paused.")
+    await update.message.reply_text("⭕ Signals paused. Use /startbot to resume.")
 
 async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global bot_running
@@ -160,7 +162,7 @@ async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Signals resumed.")
 
 async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 Checking signals now...")
+    await update.message.reply_text("🔍 Checking signals right now...")
     check_signals()
 
 def main():
