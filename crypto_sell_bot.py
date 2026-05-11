@@ -14,21 +14,17 @@ logging.basicConfig(level=logging.INFO)
 TELEGRAM_TOKEN = "8716377272:AAGJAaCKwgS8z9yRAXB7_m6glYHr99VCPtA"
 CHAT_ID = 8771579075
 
-# Assets
-BTC_ALTS = ["ETH/USDT", "BNB/USDT", "SOL/USDT", "AVAX/USDT", "ADA/USDT", "LTC/USDT", "LINK/USDT"]
-PAXG_SYMBOL = "PAXG/USDT"
-
-# BTC Strategy Settings (Unchanged)
+# Strategy Settings
 STOCH_1H_OB = 80
 STOCH_4H_OB = 78
 RSI_MIN = 68
-CHECK_INTERVAL_MIN = 15
-COOLDOWN_MINUTES = 180
 
-# PAXG Strategy Settings (Gold)
 PAXG_STOCH_1H = 83
 PAXG_STOCH_4H = 80
 PAXG_RSI_MIN = 70
+
+CHECK_INTERVAL_MIN = 15
+COOLDOWN_MINUTES = 180
 # ===========================================
 
 exchange = ccxt.binance({'enableRateLimit': True})
@@ -60,11 +56,6 @@ def stoch_rsi(close, rsi_period=14, stoch_period=14, k=3, d=3):
     d_line = k_line.rolling(window=d).mean()
     return k_line, d_line
 
-def calculate_obv(close, volume):
-    df = pd.DataFrame({'close': close, 'volume': volume})
-    df['obv'] = (np.sign(df['close'].diff()) * df['volume']).cumsum().fillna(0)
-    return df['obv']
-
 def fetch_ohlcv(symbol, timeframe, limit=300):
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
@@ -87,7 +78,7 @@ def analyze_order_book(symbol="BTC/USDT"):
     except:
         return None
 
-# ================== MAIN LOGIC ==================
+# ================== SIGNAL CHECK ==================
 def check_signals():
     global last_signal_time
     if not bot_running:
@@ -97,41 +88,39 @@ def check_signals():
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    # ================== BTC STRATEGY (Unchanged) ==================
+    # BTC Strategy
     try:
         df1h = fetch_ohlcv("BTC/USDT", "1h")
         df4h = fetch_ohlcv("BTC/USDT", "4h")
-        if df1h is not None and df4h is not None:
+        if df1h and df4h:
             k1h, d1h = stoch_rsi(df1h['close'])
             k4h, d4h = stoch_rsi(df4h['close'])
             price = df1h['close'].iloc[-1]
-            rsi1h_val = rsi(df1h['close']).iloc[-1]
-            rsi4h_val = rsi(df4h['close']).iloc[-1]
+            rsi1h = rsi(df1h['close']).iloc[-1]
+            rsi4h = rsi(df4h['close']).iloc[-1]
 
-            over_1h = k1h.iloc[-1] > STOCH_1H_OB and d1h.iloc[-1] > STOCH_1H_OB
-            over_4h = k4h.iloc[-1] > STOCH_4H_OB and d4h.iloc[-1] > STOCH_4H_OB
-            rsi_ok = rsi1h_val >= RSI_MIN and rsi4h_val >= RSI_MIN
-            bearish_cross = (k1h.iloc[-2] >= d1h.iloc[-2]) and (k1h.iloc[-1] < d1h.iloc[-1])
-
-            if over_1h and over_4h and rsi_ok and bearish_cross:
+            if (k1h.iloc[-1] > STOCH_1H_OB and d1h.iloc[-1] > STOCH_1H_OB and
+                k4h.iloc[-1] > STOCH_4H_OB and d4h.iloc[-1] > STOCH_4H_OB and
+                rsi1h >= RSI_MIN and rsi4h >= RSI_MIN):
+                
                 last_signal_time = datetime.now()
                 ob = analyze_order_book("BTC/USDT")
-                msg = f"🔴 <b>BTC STRONG SELL SIGNAL</b>\nBTC @ ${price:,.2f}\n"
-                if ob and ob['best_sell']:
+                msg = f"🔴 <b>BTC STRONG SELL</b>\nBTC @ ${price:,.2f}\n"
+                if ob and ob.get('best_sell'):
                     msg += f"🎯 Best Sell: ${ob['best_sell']:,}\n"
-                msg += f"Time: {timestamp}\n→ Reduce on alts"
+                msg += f"Time: {timestamp}\n→ Reduce alts"
                 send_message(msg)
     except:
         pass
 
-    # ================== PAXG STRATEGY (New - Independent) ==================
+    # PAXG Strategy
     try:
-        df1h_p = fetch_ohlcv(PAXG_SYMBOL, "1h")
-        df4h_p = fetch_ohlcv(PAXG_SYMBOL, "4h")
-        if df1h_p is not None and df4h_p is not None:
+        df1h_p = fetch_ohlcv("PAXG/USDT", "1h")
+        df4h_p = fetch_ohlcv("PAXG/USDT", "4h")
+        if df1h_p and df4h_p:
             k1h_p, d1h_p = stoch_rsi(df1h_p['close'])
             k4h_p, d4h_p = stoch_rsi(df4h_p['close'])
-            paxg_price = df1h_p['close'].iloc[-1]
+            price_p = df1h_p['close'].iloc[-1]
             rsi1h_p = rsi(df1h_p['close']).iloc[-1]
             rsi4h_p = rsi(df4h_p['close']).iloc[-1]
 
@@ -140,35 +129,53 @@ def check_signals():
                 rsi1h_p >= PAXG_RSI_MIN and rsi4h_p >= PAXG_RSI_MIN):
                 
                 last_signal_time = datetime.now()
-                ob_p = analyze_order_book(PAXG_SYMBOL)
-                msg = f"🟡 <b>PAXG SELL SIGNAL (Gold)</b>\nPAXG @ ${paxg_price:,.2f}\n"
-                if ob_p and ob_p['best_sell']:
-                    msg += f"🎯 Best Sell Zone: ${ob_p['best_sell']:,}\n"
-                msg += f"Time: {timestamp}\n→ Consider taking profit on PAXG"
+                ob_p = analyze_order_book("PAXG/USDT")
+                msg = f"🟡 <b>PAXG SELL (Gold)</b>\nPAXG @ ${price_p:,.2f}\n"
+                if ob_p and ob_p.get('best_sell'):
+                    msg += f"🎯 Best Sell: ${ob_p['best_sell']:,}\n"
+                msg += f"Time: {timestamp}\n→ Take profit on PAXG"
                 send_message(msg)
     except:
         pass
 
 # ================== COMMANDS ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Bot Started!\nMonitoring BTC + PAXG independently", parse_mode='HTML')
+    await update.message.reply_text("🤖 LiquidityExtractionbot Started!\nMonitoring BTC + PAXG", parse_mode='HTML')
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("/status\n/stop\n/startbot\n/checknow", parse_mode='HTML')
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = "🟢 Running" if bot_running else "⭕ Paused"
-    await update.message.reply_text(f"Bot Status: {state}\nMonitoring: BTC Strategy + PAXG Strategy")
+    await update.message.reply_text(f"Bot Status: {state}")
 
-# ... (stop, startbot, help commands remain the same)
+async def stop_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global bot_running
+    bot_running = False
+    await update.message.reply_text("⭕ Signals paused.")
+
+async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global bot_running
+    bot_running = True
+    await update.message.reply_text("✅ Signals resumed.")
+
+async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔍 Checking signals now...")
+    check_signals()
 
 def main():
     scheduler.add_job(check_signals, 'interval', minutes=CHECK_INTERVAL_MIN)
     scheduler.start()
-    send_message("🤖 <b>LiquidityExtractionbot Online</b>\nBTC Full Strategy + Independent PAXG Monitoring Active.")
+    
+    send_message("🤖 <b>LiquidityExtractionbot Online</b>\nBTC + PAXG Strategies Active.")
 
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_cmd))
     application.add_handler(CommandHandler("status", status))
     application.add_handler(CommandHandler("stop", stop_bot))
     application.add_handler(CommandHandler("startbot", start_bot))
+    application.add_handler(CommandHandler("checknow", check_now))
 
     application.run_polling()
 
