@@ -1,4 +1,3 @@
-import os
 import time
 import logging
 from datetime import datetime, timedelta
@@ -9,24 +8,27 @@ import requests
 from apscheduler.schedulers.background import BackgroundScheduler
 
 # =========================================================
-# CONFIG
+# TELEGRAM CONFIG
 # =========================================================
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+TELEGRAM_TOKEN = "8716377272:AAGJAaCKwgS8z9yRAXB7_m6glYHr99VCPtA"
+CHAT_ID = "8771579075"
+
+# =========================================================
+# BOT SETTINGS
+# =========================================================
 
 CHECK_INTERVAL_MIN = 5
+COOLDOWN_MINUTES = 60
+
+ENABLE_BTC = True
+ENABLE_PAXG = True
 
 BTC_RSI_THRESHOLD = 70
 BTC_STOCH_THRESHOLD = 85
 
 PAXG_RSI_THRESHOLD = 75
 PAXG_STOCH_THRESHOLD = 90
-
-COOLDOWN_MINUTES = 60
-
-ENABLE_BTC = True
-ENABLE_PAXG = True
 
 # =========================================================
 # LOGGING
@@ -52,19 +54,21 @@ exchange = ccxt.binance({
 # GLOBAL STATE
 # =========================================================
 
+scheduler = BackgroundScheduler()
+
 last_signal_times = {
     "BTC": None,
     "PAXG": None
 }
 
-scheduler = BackgroundScheduler()
-
 # =========================================================
-# TELEGRAM
+# TELEGRAM MESSAGE
 # =========================================================
 
-def send_message(text: str):
+def send_message(text):
+
     try:
+
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
         payload = {
@@ -79,17 +83,24 @@ def send_message(text: str):
             timeout=10
         )
 
-        if response.status_code != 200:
-            logging.error(f"Telegram error: {response.text}")
+        if response.status_code == 200:
+            logging.info("Telegram message sent.")
+        else:
+            logging.error(
+                f"Telegram error: {response.text}"
+            )
 
     except Exception as e:
-        logging.error(f"Failed to send Telegram message: {e}")
+        logging.error(
+            f"Failed to send Telegram message: {e}"
+        )
 
 # =========================================================
-# INDICATORS
+# RSI
 # =========================================================
 
-def rsi(series: pd.Series, period: int = 14) -> pd.Series:
+def rsi(series, period=14):
+
     delta = series.diff()
 
     gain = delta.clip(lower=0)
@@ -109,76 +120,116 @@ def rsi(series: pd.Series, period: int = 14) -> pd.Series:
 
     return 100 - (100 / (1 + rs))
 
+# =========================================================
+# STOCH RSI
+# =========================================================
 
 def stoch_rsi(
-    close: pd.Series,
-    rsi_period: int = 14,
-    stoch_period: int = 14,
-    k_period: int = 3,
-    d_period: int = 3
+    close,
+    rsi_period=14,
+    stoch_period=14,
+    k_period=3,
+    d_period=3
 ):
 
     rsi_values = rsi(close, rsi_period)
 
-    lowest_rsi = rsi_values.rolling(stoch_period).min()
-    highest_rsi = rsi_values.rolling(stoch_period).max()
+    lowest_rsi = rsi_values.rolling(
+        stoch_period
+    ).min()
 
-    denominator = (highest_rsi - lowest_rsi).replace(0, 1e-9)
+    highest_rsi = rsi_values.rolling(
+        stoch_period
+    ).max()
 
-    stoch = 100 * (rsi_values - lowest_rsi) / denominator
+    denominator = (
+        highest_rsi - lowest_rsi
+    ).replace(0, 1e-9)
+
+    stoch = (
+        100 *
+        (rsi_values - lowest_rsi) /
+        denominator
+    )
 
     k_line = stoch.rolling(k_period).mean()
     d_line = k_line.rolling(d_period).mean()
 
     return k_line, d_line
 
-
-def ema(series: pd.Series, period: int):
-    return series.ewm(span=period, adjust=False).mean()
-
 # =========================================================
-# MARKET DATA
+# EMA
 # =========================================================
 
-def fetch_ohlcv(symbol: str, timeframe: str, limit: int = 300):
+def ema(series, period):
+
+    return series.ewm(
+        span=period,
+        adjust=False
+    ).mean()
+
+# =========================================================
+# FETCH OHLCV
+# =========================================================
+
+def fetch_ohlcv(
+    symbol,
+    timeframe,
+    limit=300
+):
 
     try:
+
         data = exchange.fetch_ohlcv(
             symbol=symbol,
             timeframe=timeframe,
             limit=limit
         )
 
-        df = pd.DataFrame(data, columns=[
-            "timestamp",
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume"
-        ])
+        df = pd.DataFrame(
+            data,
+            columns=[
+                "timestamp",
+                "open",
+                "high",
+                "low",
+                "close",
+                "volume"
+            ]
+        )
 
         df["timestamp"] = pd.to_datetime(
             df["timestamp"],
             unit="ms"
         )
 
-        df.set_index("timestamp", inplace=True)
+        df.set_index(
+            "timestamp",
+            inplace=True
+        )
 
         return df
 
     except Exception as e:
-        logging.error(f"{symbol} {timeframe} fetch failed: {e}")
+
+        logging.error(
+            f"{symbol} {timeframe} fetch failed: {e}"
+        )
+
         return None
 
 # =========================================================
 # ORDER BOOK ANALYSIS
 # =========================================================
 
-def analyze_order_book(symbol: str):
+def analyze_order_book(symbol):
 
     try:
-        ob = exchange.fetch_order_book(symbol, limit=100)
+
+        ob = exchange.fetch_order_book(
+            symbol,
+            limit=100
+        )
 
         bids = pd.DataFrame(
             ob["bids"],
@@ -193,7 +244,9 @@ def analyze_order_book(symbol: str):
         best_bid = bids.iloc[0]["price"]
         best_ask = asks.iloc[0]["price"]
 
-        current_price = (best_bid + best_ask) / 2
+        current_price = (
+            best_bid + best_ask
+        ) / 2
 
         bid_volume = bids["amount"].sum()
         ask_volume = asks["amount"].sum()
@@ -203,13 +256,18 @@ def analyze_order_book(symbol: str):
             2
         )
 
-        asks["cum"] = asks["amount"].cumsum()
+        asks["cum"] = asks[
+            "amount"
+        ].cumsum()
 
         resistance = None
 
-        large_wall = asks[asks["cum"] >= 50]
+        large_wall = asks[
+            asks["cum"] >= 50
+        ]
 
         if not large_wall.empty:
+
             resistance = float(
                 large_wall.iloc[0]["price"]
             )
@@ -221,14 +279,18 @@ def analyze_order_book(symbol: str):
         }
 
     except Exception as e:
-        logging.error(f"Order book error {symbol}: {e}")
+
+        logging.error(
+            f"Order book error {symbol}: {e}"
+        )
+
         return None
 
 # =========================================================
-# SIGNAL ENGINE
+# COOLDOWN CHECK
 # =========================================================
 
-def cooldown_active(asset: str):
+def cooldown_active(asset):
 
     last_time = last_signal_times.get(asset)
 
@@ -237,7 +299,9 @@ def cooldown_active(asset: str):
 
     return (
         datetime.now() - last_time
-        < timedelta(minutes=COOLDOWN_MINUTES)
+        < timedelta(
+            minutes=COOLDOWN_MINUTES
+        )
     )
 
 # =========================================================
@@ -245,86 +309,124 @@ def cooldown_active(asset: str):
 # =========================================================
 
 def check_asset_signal(
-    asset_name: str,
-    symbol: str,
-    rsi_threshold: float,
-    stoch_threshold: float,
-    emoji: str
+    asset_name,
+    symbol,
+    rsi_threshold,
+    stoch_threshold,
+    emoji
 ):
 
     global last_signal_times
 
     if cooldown_active(asset_name):
+
+        logging.info(
+            f"{asset_name} cooldown active."
+        )
+
         return
 
-    logging.info(f"Checking {symbol}")
+    logging.info(
+        f"Checking {symbol}"
+    )
 
-    df_1h = fetch_ohlcv(symbol, "1h")
-    df_4h = fetch_ohlcv(symbol, "4h")
+    df_1h = fetch_ohlcv(
+        symbol,
+        "1h"
+    )
+
+    df_4h = fetch_ohlcv(
+        symbol,
+        "4h"
+    )
 
     if df_1h is None or df_4h is None:
         return
 
-    # -----------------------------
-    # Indicators
-    # -----------------------------
+    # =====================================================
+    # INDICATORS
+    # =====================================================
 
-    rsi_1h = rsi(df_1h["close"]).iloc[-1]
-    rsi_4h = rsi(df_4h["close"]).iloc[-1]
+    rsi_1h = rsi(
+        df_1h["close"]
+    ).iloc[-1]
 
-    stoch_1h, _ = stoch_rsi(df_1h["close"])
-    stoch_4h, _ = stoch_rsi(df_4h["close"])
+    rsi_4h = rsi(
+        df_4h["close"]
+    ).iloc[-1]
+
+    stoch_1h, _ = stoch_rsi(
+        df_1h["close"]
+    )
+
+    stoch_4h, _ = stoch_rsi(
+        df_4h["close"]
+    )
 
     stoch_1h_val = stoch_1h.iloc[-1]
     stoch_4h_val = stoch_4h.iloc[-1]
 
-    ema200_1h = ema(df_1h["close"], 200).iloc[-1]
+    ema200_1h = ema(
+        df_1h["close"],
+        200
+    ).iloc[-1]
 
-    current_price = df_1h["close"].iloc[-1]
+    current_price = df_1h[
+        "close"
+    ].iloc[-1]
 
-    avg_volume = df_1h["volume"].rolling(20).mean().iloc[-1]
-    current_volume = df_1h["volume"].iloc[-1]
+    avg_volume = df_1h[
+        "volume"
+    ].rolling(20).mean().iloc[-1]
 
-    # -----------------------------
-    # Trend filter
-    # -----------------------------
+    current_volume = df_1h[
+        "volume"
+    ].iloc[-1]
 
-    trend_bullish = current_price > ema200_1h
+    # =====================================================
+    # FILTERS
+    # =====================================================
 
-    # -----------------------------
-    # Volume filter
-    # -----------------------------
+    trend_bullish = (
+        current_price > ema200_1h
+    )
 
-    high_volume = current_volume > avg_volume
-
-    # -----------------------------
-    # Signal conditions
-    # -----------------------------
+    high_volume = (
+        current_volume > avg_volume
+    )
 
     conditions_met = (
+
         rsi_1h > rsi_threshold and
         rsi_4h > rsi_threshold and
+
         stoch_1h_val > stoch_threshold and
         stoch_4h_val > stoch_threshold and
+
         trend_bullish and
         high_volume
     )
 
     if not conditions_met:
+
+        logging.info(
+            f"No signal for {asset_name}"
+        )
+
         return
 
-    # -----------------------------
-    # Order book
-    # -----------------------------
+    # =====================================================
+    # ORDER BOOK
+    # =====================================================
 
     ob = analyze_order_book(symbol)
 
     if ob is None:
         return
 
-    # -----------------------------
-    # Signal strength
-    # -----------------------------
+    # =====================================================
+    # SIGNAL STRENGTH
+    # =====================================================
 
     strength = 0
 
@@ -350,9 +452,9 @@ def check_asset_signal(
     else:
         signal_strength = "MODERATE"
 
-    # -----------------------------
-    # Message
-    # -----------------------------
+    # =====================================================
+    # MESSAGE
+    # =====================================================
 
     timestamp = datetime.now().strftime(
         "%Y-%m-%d %H:%M:%S"
@@ -365,26 +467,34 @@ def check_asset_signal(
         f"📉 RSI 4H: {rsi_4h:.2f}\n"
         f"⚡ Stoch RSI 1H: {stoch_1h_val:.2f}\n"
         f"⚡ Stoch RSI 4H: {stoch_4h_val:.2f}\n"
-        f"📊 OB Imbalance: {ob['imbalance']}\n"
+        f"📊 Order Book Imbalance: {ob['imbalance']}\n"
         f"🔥 Strength: {signal_strength}\n"
     )
 
     if ob["resistance"]:
-        msg += f"🎯 Resistance: ${ob['resistance']:,.2f}\n"
+
+        msg += (
+            f"🎯 Resistance: "
+            f"${ob['resistance']:,.2f}\n"
+        )
 
     msg += (
         f"\n⏰ {timestamp}\n"
-        f"⚠️ Consider reducing risk exposure."
+        f"⚠️ Consider reducing exposure."
     )
 
     send_message(msg)
 
-    last_signal_times[asset_name] = datetime.now()
+    last_signal_times[
+        asset_name
+    ] = datetime.now()
 
-    logging.info(f"{asset_name} signal sent.")
+    logging.info(
+        f"{asset_name} signal sent."
+    )
 
 # =========================================================
-# MAIN CHECK LOOP
+# RUN ENGINE
 # =========================================================
 
 def run_signal_engine():
@@ -392,6 +502,7 @@ def run_signal_engine():
     try:
 
         if ENABLE_BTC:
+
             check_asset_signal(
                 asset_name="BTC",
                 symbol="BTC/USDT",
@@ -401,6 +512,7 @@ def run_signal_engine():
             )
 
         if ENABLE_PAXG:
+
             check_asset_signal(
                 asset_name="PAXG",
                 symbol="PAXG/USDT",
@@ -410,7 +522,10 @@ def run_signal_engine():
             )
 
     except Exception as e:
-        logging.error(f"Signal engine failure: {e}")
+
+        logging.error(
+            f"Signal engine failure: {e}"
+        )
 
 # =========================================================
 # MAIN
@@ -418,17 +533,9 @@ def run_signal_engine():
 
 def main():
 
-    if not TELEGRAM_TOKEN:
-        raise ValueError(
-            "Missing TELEGRAM_TOKEN environment variable."
-        )
-
-    if not CHAT_ID:
-        raise ValueError(
-            "Missing CHAT_ID environment variable."
-        )
-
-    logging.info("Starting trading signal bot...")
+    logging.info(
+        "Starting trading signal bot..."
+    )
 
     scheduler.add_job(
         run_signal_engine,
@@ -439,22 +546,32 @@ def main():
 
     scheduler.start()
 
-    logging.info("Scheduler started.")
+    logging.info(
+        "Scheduler started."
+    )
 
-    # Run once immediately
+    # First run immediately
     run_signal_engine()
 
     try:
+
         while True:
             time.sleep(60)
 
-    except (KeyboardInterrupt, SystemExit):
+    except (
+        KeyboardInterrupt,
+        SystemExit
+    ):
 
-        logging.info("Shutting down...")
+        logging.info(
+            "Shutting down..."
+        )
 
         scheduler.shutdown()
 
-        logging.info("Stopped.")
+        logging.info(
+            "Bot stopped."
+        )
 
 # =========================================================
 
