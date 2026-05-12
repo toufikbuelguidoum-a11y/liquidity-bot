@@ -16,11 +16,9 @@ CHAT_ID = 8771579075
 CHECK_INTERVAL_MIN = 5
 COOLDOWN_MINUTES = 60
 
-# BTC Settings
 BTC_RSI_THRESHOLD = 65
 BTC_STOCH_THRESHOLD = 84
 
-# PAXG Settings
 PAXG_RSI_THRESHOLD = 75
 PAXG_STOCH_THRESHOLD = 89
 # ===========================================
@@ -84,11 +82,11 @@ def check_signals():
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    # BTC Strategy
+    # BTC
     try:
         df1h = fetch_ohlcv("BTC/USDT", "1h")
         df4h = fetch_ohlcv("BTC/USDT", "4h")
-        if df1h is not None and df4h is not None:
+        if df1h and df4h:
             rsi1h = rsi(df1h['close']).iloc[-1]
             rsi4h = rsi(df4h['close']).iloc[-1]
             stoch1h, _ = stoch_rsi(df1h['close'])
@@ -96,23 +94,21 @@ def check_signals():
             
             if (rsi1h > BTC_RSI_THRESHOLD and rsi4h > BTC_RSI_THRESHOLD and
                 stoch1h.iloc[-1] > BTC_STOCH_THRESHOLD and stoch4h.iloc[-1] > BTC_STOCH_THRESHOLD):
-                
-                last_signal_time = datetime.now()
                 ob = analyze_order_book("BTC/USDT")
                 msg = f"🔴 <b>BTC SELL SIGNAL</b>\nBTC @ ${ob['current']:,.2f}\n"
                 msg += f"RSI: {rsi1h:.1f}/{rsi4h:.1f} | StochRSI: {stoch1h.iloc[-1]:.1f}\n"
                 if ob['best_sell']:
-                    msg += f"🎯 Best Sell Zone: ${ob['best_sell']:,}\n"
-                msg += f"Time: {timestamp}\n→ Reduce exposure on alts"
+                    msg += f"🎯 Best Sell: ${ob['best_sell']:,}\n"
+                msg += f"Time: {timestamp}\n→ Reduce alts"
                 send_message(msg)
     except:
         pass
 
-    # PAXG Strategy
+    # PAXG
     try:
         df1h_p = fetch_ohlcv("PAXG/USDT", "1h")
         df4h_p = fetch_ohlcv("PAXG/USDT", "4h")
-        if df1h_p is not None and df4h_p is not None:
+        if df1h_p and df4h_p:
             rsi1h_p = rsi(df1h_p['close']).iloc[-1]
             rsi4h_p = rsi(df4h_p['close']).iloc[-1]
             stoch1h_p, _ = stoch_rsi(df1h_p['close'])
@@ -120,13 +116,11 @@ def check_signals():
             
             if (rsi1h_p > PAXG_RSI_THRESHOLD and rsi4h_p > PAXG_RSI_THRESHOLD and
                 stoch1h_p.iloc[-1] > PAXG_STOCH_THRESHOLD and stoch4h_p.iloc[-1] > PAXG_STOCH_THRESHOLD):
-                
-                last_signal_time = datetime.now()
                 ob_p = analyze_order_book("PAXG/USDT")
-                msg = f"🟡 <b>PAXG SELL SIGNAL (Gold)</b>\nPAXG @ ${ob_p['current']:,.2f}\n"
+                msg = f"🟡 <b>PAXG SELL SIGNAL</b>\nPAXG @ ${ob_p['current']:,.2f}\n"
                 msg += f"RSI: {rsi1h_p:.1f}/{rsi4h_p:.1f} | StochRSI: {stoch1h_p.iloc[-1]:.1f}\n"
                 if ob_p['best_sell']:
-                    msg += f"🎯 Best Sell Zone: ${ob_p['best_sell']:,}\n"
+                    msg += f"🎯 Best Sell: ${ob_p['best_sell']:,}\n"
                 msg += f"Time: {timestamp}\n→ Take profit on PAXG"
                 send_message(msg)
     except:
@@ -151,4 +145,16 @@ async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Signals resumed.")
 
 async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 Fetch
+    await update.message.reply_text("🔍 Fetching current conditions...")
+
+    msg = f"<b>Live Market Conditions</b>\n{datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+
+    # BTC
+    try:
+        df1h = fetch_ohlcv("BTC/USDT", "1h")
+        df4h = fetch_ohlcv("BTC/USDT", "4h")
+        if df1h and df4h:
+            rsi1h = rsi(df1h['close']).iloc[-1]
+            rsi4h = rsi(df4h['close']).iloc[-1]
+            stoch1h, _ = stoch_rsi(df1h['close'])
+            stoch4h,
