@@ -13,8 +13,8 @@ logging.basicConfig(level=logging.INFO)
 TELEGRAM_TOKEN = "8716377272:AAGJAaCKwgS8z9yRAXB7_m6glYHr99VCPtA"
 CHAT_ID = 8771579075
 
-CHECK_INTERVAL_MIN = 5        # Changed to 5 minutes
-COOLDOWN_MINUTES = 60         # Cooldown reduced
+CHECK_INTERVAL_MIN = 5
+COOLDOWN_MINUTES = 60
 
 # BTC Settings
 BTC_RSI_THRESHOLD = 65
@@ -134,11 +134,11 @@ def check_signals():
 
 # ================== COMMANDS ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Bot Started!\nChecking every 5 minutes", parse_mode='HTML')
+    await update.message.reply_text("🤖 Bot Started!", parse_mode='HTML')
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = "🟢 Running" if bot_running else "⭕ Paused"
-    await update.message.reply_text(f"Bot Status: {state}\nInterval: {CHECK_INTERVAL_MIN} minutes")
+    await update.message.reply_text(f"Bot Status: {state}")
 
 async def stop_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global bot_running
@@ -151,11 +151,4 @@ async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Signals resumed.")
 
 async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔍 Fetching current conditions...")
-    
-    msg = f"<b>Current Market Conditions</b>\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
-    
-    # BTC Report
-    try:
-        df1h = fetch_ohlcv("BTC/USDT", "1h")
-        df4h = fetch_ohlcv("BTC/US
+    await update.message.reply_text("🔍 Fetch
