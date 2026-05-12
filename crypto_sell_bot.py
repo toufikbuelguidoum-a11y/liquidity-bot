@@ -1,166 +1,462 @@
+import os
+import time
+import logging
+from datetime import datetime, timedelta
+
 import ccxt
 import pandas as pd
-from datetime import datetime, timedelta
-import telegram
-from telegram.ext import Application, CommandHandler, ContextTypes
+import requests
 from apscheduler.schedulers.background import BackgroundScheduler
-import logging
 
-logging.basicConfig(level=logging.INFO)
+# =========================================================
+# CONFIG
+# =========================================================
 
-# ================== CONFIG ==================
-TELEGRAM_TOKEN = "8716377272:AAGJAaCKwgS8z9yRAXB7_m6glYHr99VCPtA"
-CHAT_ID = 8771579075
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
 
 CHECK_INTERVAL_MIN = 5
-COOLDOWN_MINUTES = 60
 
-BTC_RSI_THRESHOLD = 65
-BTC_STOCH_THRESHOLD = 84
+BTC_RSI_THRESHOLD = 70
+BTC_STOCH_THRESHOLD = 85
 
 PAXG_RSI_THRESHOLD = 75
-PAXG_STOCH_THRESHOLD = 89
-# ===========================================
+PAXG_STOCH_THRESHOLD = 90
 
-exchange = ccxt.binance({'enableRateLimit': True})
-bot = telegram.Bot(token=TELEGRAM_TOKEN)
+COOLDOWN_MINUTES = 60
+
+ENABLE_BTC = True
+ENABLE_PAXG = True
+
+# =========================================================
+# LOGGING
+# =========================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s"
+)
+
+# =========================================================
+# EXCHANGE
+# =========================================================
+
+exchange = ccxt.binance({
+    "enableRateLimit": True,
+    "options": {
+        "defaultType": "spot"
+    }
+})
+
+# =========================================================
+# GLOBAL STATE
+# =========================================================
+
+last_signal_times = {
+    "BTC": None,
+    "PAXG": None
+}
+
 scheduler = BackgroundScheduler()
-last_signal_time = None
-bot_running = True
 
+# =========================================================
+# TELEGRAM
+# =========================================================
 
-def send_message(text):
+def send_message(text: str):
     try:
-        bot.send_message(chat_id=CHAT_ID, text=text, parse_mode='HTML')
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+
+        payload = {
+            "chat_id": CHAT_ID,
+            "text": text,
+            "parse_mode": "HTML"
+        }
+
+        response = requests.post(
+            url,
+            json=payload,
+            timeout=10
+        )
+
+        if response.status_code != 200:
+            logging.error(f"Telegram error: {response.text}")
+
     except Exception as e:
-        logging.error(f"Failed to send message: {e}")
+        logging.error(f"Failed to send Telegram message: {e}")
 
+# =========================================================
+# INDICATORS
+# =========================================================
 
-def rsi(series, period=14):
+def rsi(series: pd.Series, period: int = 14) -> pd.Series:
     delta = series.diff()
-    gain = delta.where(delta > 0, 0).rolling(window=period).mean()
-    loss = -delta.where(delta < 0, 0).rolling(window=period).mean()
-    rs = gain / loss
+
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+
+    avg_gain = gain.ewm(
+        alpha=1 / period,
+        adjust=False
+    ).mean()
+
+    avg_loss = loss.ewm(
+        alpha=1 / period,
+        adjust=False
+    ).mean()
+
+    rs = avg_gain / avg_loss
+
     return 100 - (100 / (1 + rs))
 
 
-def stoch_rsi(close, rsi_period=14, stoch_period=14, k=3, d=3):
-    rsi_val = rsi(close, rsi_period)
-    rsi_low = rsi_val.rolling(window=stoch_period).min()
-    rsi_high = rsi_val.rolling(window=stoch_period).max()
-    stoch = 100 * (rsi_val - rsi_low) / (rsi_high - rsi_low)
-    k_line = stoch.rolling(window=k).mean()
-    d_line = k_line.rolling(window=d).mean()
+def stoch_rsi(
+    close: pd.Series,
+    rsi_period: int = 14,
+    stoch_period: int = 14,
+    k_period: int = 3,
+    d_period: int = 3
+):
+
+    rsi_values = rsi(close, rsi_period)
+
+    lowest_rsi = rsi_values.rolling(stoch_period).min()
+    highest_rsi = rsi_values.rolling(stoch_period).max()
+
+    denominator = (highest_rsi - lowest_rsi).replace(0, 1e-9)
+
+    stoch = 100 * (rsi_values - lowest_rsi) / denominator
+
+    k_line = stoch.rolling(k_period).mean()
+    d_line = k_line.rolling(d_period).mean()
+
     return k_line, d_line
 
 
-def fetch_ohlcv(symbol, timeframe, limit=150):
+def ema(series: pd.Series, period: int):
+    return series.ewm(span=period, adjust=False).mean()
+
+# =========================================================
+# MARKET DATA
+# =========================================================
+
+def fetch_ohlcv(symbol: str, timeframe: str, limit: int = 300):
+
     try:
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df.set_index('timestamp', inplace=True)
+        data = exchange.fetch_ohlcv(
+            symbol=symbol,
+            timeframe=timeframe,
+            limit=limit
+        )
+
+        df = pd.DataFrame(data, columns=[
+            "timestamp",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume"
+        ])
+
+        df["timestamp"] = pd.to_datetime(
+            df["timestamp"],
+            unit="ms"
+        )
+
+        df.set_index("timestamp", inplace=True)
+
         return df
+
     except Exception as e:
-        logging.error(f"Failed to fetch OHLCV for {symbol}: {e}")
+        logging.error(f"{symbol} {timeframe} fetch failed: {e}")
         return None
 
+# =========================================================
+# ORDER BOOK ANALYSIS
+# =========================================================
 
-def analyze_order_book(symbol):
+def analyze_order_book(symbol: str):
+
     try:
-        ob = exchange.fetch_order_book(symbol, limit=50)
-        bids = pd.DataFrame(ob['bids'], columns=['price', 'amount'])
-        asks = pd.DataFrame(ob['asks'], columns=['price', 'amount'])
-        current = (bids['price'].iloc[0] + asks['price'].iloc[0]) / 2
-        asks['cum'] = asks['amount'].cumsum()
-        best_sell = asks[asks['cum'] > 25]['price'].iloc[0] if len(asks[asks['cum'] > 25]) > 0 else None
-        return {'current': round(current, 2), 'best_sell': round(best_sell, 2) if best_sell else None}
+        ob = exchange.fetch_order_book(symbol, limit=100)
+
+        bids = pd.DataFrame(
+            ob["bids"],
+            columns=["price", "amount"]
+        )
+
+        asks = pd.DataFrame(
+            ob["asks"],
+            columns=["price", "amount"]
+        )
+
+        best_bid = bids.iloc[0]["price"]
+        best_ask = asks.iloc[0]["price"]
+
+        current_price = (best_bid + best_ask) / 2
+
+        bid_volume = bids["amount"].sum()
+        ask_volume = asks["amount"].sum()
+
+        imbalance = round(
+            bid_volume / max(ask_volume, 1e-9),
+            2
+        )
+
+        asks["cum"] = asks["amount"].cumsum()
+
+        resistance = None
+
+        large_wall = asks[asks["cum"] >= 50]
+
+        if not large_wall.empty:
+            resistance = float(
+                large_wall.iloc[0]["price"]
+            )
+
+        return {
+            "price": round(current_price, 2),
+            "resistance": resistance,
+            "imbalance": imbalance
+        }
+
     except Exception as e:
-        logging.error(f"Failed to analyze order book for {symbol}: {e}")
+        logging.error(f"Order book error {symbol}: {e}")
         return None
 
+# =========================================================
+# SIGNAL ENGINE
+# =========================================================
 
-def check_signals():
-    global last_signal_time, bot_running
+def cooldown_active(asset: str):
 
-    if not bot_running:
+    last_time = last_signal_times.get(asset)
+
+    if last_time is None:
+        return False
+
+    return (
+        datetime.now() - last_time
+        < timedelta(minutes=COOLDOWN_MINUTES)
+    )
+
+# =========================================================
+# SIGNAL CHECK
+# =========================================================
+
+def check_asset_signal(
+    asset_name: str,
+    symbol: str,
+    rsi_threshold: float,
+    stoch_threshold: float,
+    emoji: str
+):
+
+    global last_signal_times
+
+    if cooldown_active(asset_name):
         return
 
-    if last_signal_time and datetime.now() - last_signal_time < timedelta(minutes=COOLDOWN_MINUTES):
+    logging.info(f"Checking {symbol}")
+
+    df_1h = fetch_ohlcv(symbol, "1h")
+    df_4h = fetch_ohlcv(symbol, "4h")
+
+    if df_1h is None or df_4h is None:
         return
 
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-    signal_sent = False
+    # -----------------------------
+    # Indicators
+    # -----------------------------
 
-    # BTC
+    rsi_1h = rsi(df_1h["close"]).iloc[-1]
+    rsi_4h = rsi(df_4h["close"]).iloc[-1]
+
+    stoch_1h, _ = stoch_rsi(df_1h["close"])
+    stoch_4h, _ = stoch_rsi(df_4h["close"])
+
+    stoch_1h_val = stoch_1h.iloc[-1]
+    stoch_4h_val = stoch_4h.iloc[-1]
+
+    ema200_1h = ema(df_1h["close"], 200).iloc[-1]
+
+    current_price = df_1h["close"].iloc[-1]
+
+    avg_volume = df_1h["volume"].rolling(20).mean().iloc[-1]
+    current_volume = df_1h["volume"].iloc[-1]
+
+    # -----------------------------
+    # Trend filter
+    # -----------------------------
+
+    trend_bullish = current_price > ema200_1h
+
+    # -----------------------------
+    # Volume filter
+    # -----------------------------
+
+    high_volume = current_volume > avg_volume
+
+    # -----------------------------
+    # Signal conditions
+    # -----------------------------
+
+    conditions_met = (
+        rsi_1h > rsi_threshold and
+        rsi_4h > rsi_threshold and
+        stoch_1h_val > stoch_threshold and
+        stoch_4h_val > stoch_threshold and
+        trend_bullish and
+        high_volume
+    )
+
+    if not conditions_met:
+        return
+
+    # -----------------------------
+    # Order book
+    # -----------------------------
+
+    ob = analyze_order_book(symbol)
+
+    if ob is None:
+        return
+
+    # -----------------------------
+    # Signal strength
+    # -----------------------------
+
+    strength = 0
+
+    if rsi_1h > rsi_threshold:
+        strength += 1
+
+    if rsi_4h > rsi_threshold:
+        strength += 1
+
+    if stoch_1h_val > stoch_threshold:
+        strength += 1
+
+    if stoch_4h_val > stoch_threshold:
+        strength += 1
+
+    if high_volume:
+        strength += 1
+
+    if strength >= 5:
+        signal_strength = "EXTREME"
+    elif strength >= 4:
+        signal_strength = "STRONG"
+    else:
+        signal_strength = "MODERATE"
+
+    # -----------------------------
+    # Message
+    # -----------------------------
+
+    timestamp = datetime.now().strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+    msg = (
+        f"{emoji} <b>{asset_name} SELL SIGNAL</b>\n\n"
+        f"💰 Price: ${ob['price']:,.2f}\n"
+        f"📉 RSI 1H: {rsi_1h:.2f}\n"
+        f"📉 RSI 4H: {rsi_4h:.2f}\n"
+        f"⚡ Stoch RSI 1H: {stoch_1h_val:.2f}\n"
+        f"⚡ Stoch RSI 4H: {stoch_4h_val:.2f}\n"
+        f"📊 OB Imbalance: {ob['imbalance']}\n"
+        f"🔥 Strength: {signal_strength}\n"
+    )
+
+    if ob["resistance"]:
+        msg += f"🎯 Resistance: ${ob['resistance']:,.2f}\n"
+
+    msg += (
+        f"\n⏰ {timestamp}\n"
+        f"⚠️ Consider reducing risk exposure."
+    )
+
+    send_message(msg)
+
+    last_signal_times[asset_name] = datetime.now()
+
+    logging.info(f"{asset_name} signal sent.")
+
+# =========================================================
+# MAIN CHECK LOOP
+# =========================================================
+
+def run_signal_engine():
+
     try:
-        df1h = fetch_ohlcv("BTC/USDT", "1h")
-        df4h = fetch_ohlcv("BTC/USDT", "4h")
 
-        if df1h is not None and df4h is not None:
-            rsi1h = rsi(df1h['close']).iloc[-1]
-            rsi4h = rsi(df4h['close']).iloc[-1]
-            stoch1h, _ = stoch_rsi(df1h['close'])
-            stoch4h, _ = stoch_rsi(df4h['close'])
+        if ENABLE_BTC:
+            check_asset_signal(
+                asset_name="BTC",
+                symbol="BTC/USDT",
+                rsi_threshold=BTC_RSI_THRESHOLD,
+                stoch_threshold=BTC_STOCH_THRESHOLD,
+                emoji="🔴"
+            )
 
-            if (rsi1h > BTC_RSI_THRESHOLD and rsi4h > BTC_RSI_THRESHOLD and
-                    stoch1h.iloc[-1] > BTC_STOCH_THRESHOLD and stoch4h.iloc[-1] > BTC_STOCH_THRESHOLD):
-                ob = analyze_order_book("BTC/USDT")
-                if ob:
-                    msg = f"🔴 <b>BTC SELL SIGNAL</b>\nBTC @ ${ob['current']:,.2f}\n"
-                    msg += f"RSI: {rsi1h:.1f}/{rsi4h:.1f} | StochRSI: {stoch1h.iloc[-1]:.1f}\n"
-                    if ob['best_sell']:
-                        msg += f"🎯 Best Sell: ${ob['best_sell']:,}\n"
-                    msg += f"Time: {timestamp}\n→ Reduce alts"
-                    send_message(msg)
-                    signal_sent = True
+        if ENABLE_PAXG:
+            check_asset_signal(
+                asset_name="PAXG",
+                symbol="PAXG/USDT",
+                rsi_threshold=PAXG_RSI_THRESHOLD,
+                stoch_threshold=PAXG_STOCH_THRESHOLD,
+                emoji="🟡"
+            )
+
     except Exception as e:
-        logging.error(f"BTC signal check failed: {e}")
+        logging.error(f"Signal engine failure: {e}")
 
-    # PAXG
-    try:
-        df1h_p = fetch_ohlcv("PAXG/USDT", "1h")
-        df4h_p = fetch_ohlcv("PAXG/USDT", "4h")
-
-        if df1h_p is not None and df4h_p is not None:
-            rsi1h_p = rsi(df1h_p['close']).iloc[-1]
-            rsi4h_p = rsi(df4h_p['close']).iloc[-1]
-            stoch1h_p, _ = stoch_rsi(df1h_p['close'])
-            stoch4h_p, _ = stoch_rsi(df4h_p['close'])
-
-            if (rsi1h_p > PAXG_RSI_THRESHOLD and rsi4h_p > PAXG_RSI_THRESHOLD and
-                    stoch1h_p.iloc[-1] > PAXG_STOCH_THRESHOLD and stoch4h_p.iloc[-1] > PAXG_STOCH_THRESHOLD):
-                ob_p = analyze_order_book("PAXG/USDT")
-                if ob_p:
-                    msg = f"🟡 <b>PAXG SELL SIGNAL</b>\nPAXG @ ${ob_p['current']:,.2f}\n"
-                    msg += f"RSI: {rsi1h_p:.1f}/{rsi4h_p:.1f} | StochRSI: {stoch1h_p.iloc[-1]:.1f}\n"
-                    if ob_p['best_sell']:
-                        msg += f"🎯 Best Sell: ${ob_p['best_sell']:,}\n"
-                    msg += f"Time: {timestamp}\n→ Reduce altcoins"
-                    send_message(msg)
-                    signal_sent = True
-    except Exception as e:
-        logging.error(f"PAXG signal check failed: {e}")
-
-    if signal_sent:
-        last_signal_time = datetime.now()
-
-
-# Schedule the signal checks
-scheduler.add_job(check_signals, 'interval', minutes=CHECK_INTERVAL_MIN)
+# =========================================================
+# MAIN
+# =========================================================
 
 def main():
-    try:
-        scheduler.start()
-        logging.info("Scheduler started.")
-        # Keep the script running
-        import time
-        while True:
-            time.sleep(1)
-    except (KeyboardInterrupt, SystemExit):
-        scheduler.shutdown()
-        logging.info("Scheduler stopped.")
 
+    if not TELEGRAM_TOKEN:
+        raise ValueError(
+            "Missing TELEGRAM_TOKEN environment variable."
+        )
+
+    if not CHAT_ID:
+        raise ValueError(
+            "Missing CHAT_ID environment variable."
+        )
+
+    logging.info("Starting trading signal bot...")
+
+    scheduler.add_job(
+        run_signal_engine,
+        trigger="interval",
+        minutes=CHECK_INTERVAL_MIN,
+        max_instances=1
+    )
+
+    scheduler.start()
+
+    logging.info("Scheduler started.")
+
+    # Run once immediately
+    run_signal_engine()
+
+    try:
+        while True:
+            time.sleep(60)
+
+    except (KeyboardInterrupt, SystemExit):
+
+        logging.info("Shutting down...")
+
+        scheduler.shutdown()
+
+        logging.info("Stopped.")
+
+# =========================================================
 
 if __name__ == "__main__":
     main()
