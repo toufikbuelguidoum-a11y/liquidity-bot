@@ -2,7 +2,6 @@ import ccxt
 import pandas as pd
 from datetime import datetime, timedelta
 import telegram
-from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from apscheduler.schedulers.background import BackgroundScheduler
 import logging
@@ -134,4 +133,34 @@ def check_signals():
                 ob_p = analyze_order_book("PAXG/USDT")
                 if ob_p:
                     msg = f"🟡 <b>PAXG SELL SIGNAL</b>\nPAXG @ ${ob_p['current']:,.2f}\n"
-                    msg += f"RSI: {
+                    msg += f"RSI: {rsi1h_p:.1f}/{rsi4h_p:.1f} | StochRSI: {stoch1h_p.iloc[-1]:.1f}\n"
+                    if ob_p['best_sell']:
+                        msg += f"🎯 Best Sell: ${ob_p['best_sell']:,}\n"
+                    msg += f"Time: {timestamp}\n→ Reduce altcoins"
+                    send_message(msg)
+                    signal_sent = True
+    except Exception as e:
+        logging.error(f"PAXG signal check failed: {e}")
+
+    if signal_sent:
+        last_signal_time = datetime.now()
+
+
+# Schedule the signal checks
+scheduler.add_job(check_signals, 'interval', minutes=CHECK_INTERVAL_MIN)
+
+def main():
+    try:
+        scheduler.start()
+        logging.info("Scheduler started.")
+        # Keep the script running
+        import time
+        while True:
+            time.sleep(1)
+    except (KeyboardInterrupt, SystemExit):
+        scheduler.shutdown()
+        logging.info("Scheduler stopped.")
+
+
+if __name__ == "__main__":
+    main()
