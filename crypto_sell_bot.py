@@ -8,7 +8,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 logging.basicConfig(level=logging.INFO)
 
-# Load these from environment variables in production!
+# Load these securely in production!
 TELEGRAM_TOKEN = "YOUR_TELEGRAM_TOKEN"
 CHAT_ID = 123456789
 
@@ -16,13 +16,6 @@ CHECK_INTERVAL_MIN = 5
 
 exchange = ccxt.binance({'enableRateLimit': True})
 scheduler = BackgroundScheduler()
-bot_running = True
-
-async def send_message(context: ContextTypes.DEFAULT_TYPE, text: str):
-    try:
-        await context.bot.send_message(chat_id=CHAT_ID, text=text, parse_mode='HTML')
-    except Exception as e:
-        logging.error(f"Failed to send message: {e}")
 
 def fetch_ohlcv(symbol, timeframe):
     try:
@@ -52,20 +45,24 @@ async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = f"<b>Live Market Conditions</b>\n{datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
 
-    # BTC Test
+    # BTC
     df1h = fetch_ohlcv("BTC/USDT", "1h")
     if df1h is not None and not df1h.empty:
         try:
             price = df1h['close'].iloc[-1]
-            rsi_val = calculate_rsi(df1h['close']).iloc[-1]
-            msg += f"<b>BTC</b>\nPrice: ${price:,.2f}\nRSI: {rsi_val:.1f}\n\n"
+            rsi_series = calculate_rsi(df1h['close'])
+            if not rsi_series.dropna().empty:
+                rsi_val = rsi_series.iloc[-1]
+                msg += f"<b>BTC</b>\nPrice: ${price:,.2f}\nRSI: {rsi_val:.1f}\n\n"
+            else:
+                msg += f"<b>BTC</b>\nPrice: ${price:,.2f}\nRSI: Not available\n\n"
         except Exception as e:
-            logging.error(f"BTC RSI calc failed: {e}")
+            logging.error(f"BTC calc failed: {e}")
             msg += "BTC: Data fetched but calculation failed\n\n"
     else:
         msg += "BTC: No data\n\n"
 
-    # PAXG Test
+    # PAXG
     df1h_p = fetch_ohlcv("PAXG/USDT", "1h")
     if df1h_p is not None and not df1h_p.empty:
         try:
