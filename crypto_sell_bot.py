@@ -1,29 +1,28 @@
 import ccxt
 import pandas as pd
 from datetime import datetime
-import telegram
+import logging
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from apscheduler.schedulers.background import BackgroundScheduler
-import logging
 
 logging.basicConfig(level=logging.INFO)
 
-TELEGRAM_TOKEN = "8716377272:AAGJAaCKwgS8z9yRAXB7_m6glYHr99VCPtA"
-CHAT_ID = 8771579075
+# Load these from environment variables in production!
+TELEGRAM_TOKEN = "YOUR_TELEGRAM_TOKEN"
+CHAT_ID = 123456789
 
 CHECK_INTERVAL_MIN = 5
 
 exchange = ccxt.binance({'enableRateLimit': True})
-bot = telegram.Bot(token=TELEGRAM_TOKEN)
 scheduler = BackgroundScheduler()
 bot_running = True
 
-def send_message(text):
+async def send_message(context: ContextTypes.DEFAULT_TYPE, text: str):
     try:
-        bot.send_message(chat_id=CHAT_ID, text=text, parse_mode='HTML')
-    except:
-        pass
+        await context.bot.send_message(chat_id=CHAT_ID, text=text, parse_mode='HTML')
+    except Exception as e:
+        logging.error(f"Failed to send message: {e}")
 
 def fetch_ohlcv(symbol, timeframe):
     try:
@@ -33,7 +32,20 @@ def fetch_ohlcv(symbol, timeframe):
         df.set_index('timestamp', inplace=True)
         return df
     except Exception as e:
-        return f"Error: {str(e)}"
+        logging.error(f"Error fetching {symbol}: {e}")
+        return None
+
+def calculate_rsi(series, period=14):
+    delta = series.diff()
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
+
+    rs = avg_gain / avg_loss.replace(0, pd.NA)
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
 
 async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 Fetching current conditions...")
@@ -42,41 +54,41 @@ async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # BTC Test
     df1h = fetch_ohlcv("BTC/USDT", "1h")
-    if isinstance(df1h, str):
-        msg += f"BTC: {df1h}\n\n"
-    elif df1h is not None:
+    if df1h is not None and not df1h.empty:
         try:
             price = df1h['close'].iloc[-1]
-            rsi_val = 100 - (100 / (1 + (df1h['close'].diff().where(lambda x: x > 0, 0).rolling(14).mean() / 
-                                         (-df1h['close'].diff().where(lambda x: x < 0, 0).rolling(14).mean()))))
-            msg += f"<b>BTC</b>\nPrice: ${price:,.2f}\nRSI: {rsi_val.iloc[-1]:.1f}\n"
-        except:
+            rsi_val = calculate_rsi(df1h['close']).iloc[-1]
+            msg += f"<b>BTC</b>\nPrice: ${price:,.2f}\nRSI: {rsi_val:.1f}\n\n"
+        except Exception as e:
+            logging.error(f"BTC RSI calc failed: {e}")
             msg += "BTC: Data fetched but calculation failed\n\n"
     else:
         msg += "BTC: No data\n\n"
 
     # PAXG Test
     df1h_p = fetch_ohlcv("PAXG/USDT", "1h")
-    if isinstance(df1h_p, str):
-        msg += f"PAXG: {df1h_p}"
-    elif df1h_p is not None:
+    if df1h_p is not None and not df1h_p.empty:
         try:
             price_p = df1h_p['close'].iloc[-1]
-            msg += f"<b>PAXG</b>\nPrice: ${price_p:,.2f}"
-        except:
-            msg += "PAXG: Data fetched but calculation failed"
+            msg += f"<b>PAXG</b>\nPrice: ${price_p:,.2f}\n"
+        except Exception as e:
+            logging.error(f"PAXG calc failed: {e}")
+            msg += "PAXG: Data fetched but calculation failed\n"
     else:
-        msg += "PAXG: No data"
+        msg += "PAXG: No data\n"
 
     await update.message.reply_text(msg, parse_mode='HTML')
 
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🤖 Bot is running")
+
 def main():
     scheduler.start()
-    send_message("🤖 Bot Online - Diagnostic Mode")
+    logging.info("Scheduler started")
 
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     application.add_handler(CommandHandler("checknow", check_now))
-    application.add_handler(CommandHandler("start", lambda u,c: u.message.reply_text("Bot is running")))
+    application.add_handler(CommandHandler("start", start))
 
     application.run_polling()
 
