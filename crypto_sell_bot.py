@@ -9,16 +9,18 @@ import logging
 
 logging.basicConfig(level=logging.INFO)
 
-# ================== CONFIG ==================
+# ================== YOUR CREDENTIALS ==================
 TELEGRAM_TOKEN = "8716377272:AAGJAaCKwgS8z9yRAXB7_m6glYHr99VCPtA"
 CHAT_ID = 8771579075
 
 CHECK_INTERVAL_MIN = 5
 COOLDOWN_MINUTES = 60
 
+# BTC Settings
 BTC_RSI_THRESHOLD = 65
 BTC_STOCH_THRESHOLD = 84
 
+# PAXG Settings
 PAXG_RSI_THRESHOLD = 75
 PAXG_STOCH_THRESHOLD = 89
 # ===========================================
@@ -82,7 +84,7 @@ def check_signals():
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    # BTC
+    # BTC Strategy
     try:
         df1h = fetch_ohlcv("BTC/USDT", "1h")
         df4h = fetch_ohlcv("BTC/USDT", "4h")
@@ -97,14 +99,14 @@ def check_signals():
                 ob = analyze_order_book("BTC/USDT")
                 msg = f"🔴 <b>BTC SELL SIGNAL</b>\nBTC @ ${ob['current']:,.2f}\n"
                 msg += f"RSI: {rsi1h:.1f}/{rsi4h:.1f} | StochRSI: {stoch1h.iloc[-1]:.1f}\n"
-                if ob['best_sell']:
-                    msg += f"🎯 Best Sell: ${ob['best_sell']:,}\n"
-                msg += f"Time: {timestamp}\n→ Reduce alts"
+                if ob.get('best_sell'):
+                    msg += f"🎯 Best Sell Zone: ${ob['best_sell']:,}\n"
+                msg += f"Time: {timestamp}\n→ Reduce exposure on alts"
                 send_message(msg)
     except:
         pass
 
-    # PAXG
+    # PAXG Strategy
     try:
         df1h_p = fetch_ohlcv("PAXG/USDT", "1h")
         df4h_p = fetch_ohlcv("PAXG/USDT", "4h")
@@ -117,10 +119,10 @@ def check_signals():
             if (rsi1h_p > PAXG_RSI_THRESHOLD and rsi4h_p > PAXG_RSI_THRESHOLD and
                 stoch1h_p.iloc[-1] > PAXG_STOCH_THRESHOLD and stoch4h_p.iloc[-1] > PAXG_STOCH_THRESHOLD):
                 ob_p = analyze_order_book("PAXG/USDT")
-                msg = f"🟡 <b>PAXG SELL SIGNAL</b>\nPAXG @ ${ob_p['current']:,.2f}\n"
+                msg = f"🟡 <b>PAXG SELL SIGNAL (Gold)</b>\nPAXG @ ${ob_p['current']:,.2f}\n"
                 msg += f"RSI: {rsi1h_p:.1f}/{rsi4h_p:.1f} | StochRSI: {stoch1h_p.iloc[-1]:.1f}\n"
-                if ob_p['best_sell']:
-                    msg += f"🎯 Best Sell: ${ob_p['best_sell']:,}\n"
+                if ob_p.get('best_sell'):
+                    msg += f"🎯 Best Sell Zone: ${ob_p['best_sell']:,}\n"
                 msg += f"Time: {timestamp}\n→ Take profit on PAXG"
                 send_message(msg)
     except:
@@ -149,7 +151,7 @@ async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     msg = f"<b>Live Market Conditions</b>\n{datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
 
-    # BTC
+    # BTC Report
     try:
         df1h = fetch_ohlcv("BTC/USDT", "1h")
         df4h = fetch_ohlcv("BTC/USDT", "4h")
@@ -163,7 +165,7 @@ async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         msg += "BTC: Error fetching data\n\n"
 
-    # PAXG
+    # PAXG Report
     try:
         df1h_p = fetch_ohlcv("PAXG/USDT", "1h")
         df4h_p = fetch_ohlcv("PAXG/USDT", "4h")
