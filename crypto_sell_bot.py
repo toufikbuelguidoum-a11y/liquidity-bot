@@ -6,36 +6,38 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 from apscheduler.schedulers.background import BackgroundScheduler
 import logging
+import asyncio
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# ================== YOUR CREDENTIALS ==================
+# ================== CONFIG ==================
 TELEGRAM_TOKEN = "8716377272:AAGJAaCKwgS8z9yRAXB7_m6glYHr99VCPtA"
 CHAT_ID = 8771579075
 
 CHECK_INTERVAL_MIN = 5
 COOLDOWN_MINUTES = 60
 
-# BTC Settings
 BTC_RSI_THRESHOLD = 65
 BTC_STOCH_THRESHOLD = 84
 
-# PAXG Settings
 PAXG_RSI_THRESHOLD = 75
 PAXG_STOCH_THRESHOLD = 89
 # ===========================================
 
 exchange = ccxt.binance({'enableRateLimit': True})
-bot = telegram.Bot(token=TELEGRAM_TOKEN)
 scheduler = BackgroundScheduler()
 last_signal_time = None
 bot_running = True
 
+# Create bot instance
+bot = telegram.Bot(token=TELEGRAM_TOKEN)
+
 def send_message(text):
     try:
-        bot.send_message(chat_id=CHAT_ID, text=text, parse_mode='HTML')
-    except:
-        pass
+        asyncio.run(bot.send_message(chat_id=CHAT_ID, text=text, parse_mode='HTML'))
+        logging.info("Message sent successfully")
+    except Exception as e:
+        logging.error(f"Failed to send message: {e}")
 
 def rsi(series, period=14):
     delta = series.diff()
@@ -60,7 +62,8 @@ def fetch_ohlcv(symbol, timeframe, limit=150):
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df.set_index('timestamp', inplace=True)
         return df
-    except:
+    except Exception as e:
+        logging.error(f"Fetch error {symbol}: {e}")
         return None
 
 def analyze_order_book(symbol):
@@ -84,7 +87,7 @@ def check_signals():
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    # BTC Strategy
+    # BTC
     try:
         df1h = fetch_ohlcv("BTC/USDT", "1h")
         df4h = fetch_ohlcv("BTC/USDT", "4h")
@@ -100,13 +103,14 @@ def check_signals():
                 msg = f"🔴 <b>BTC SELL SIGNAL</b>\nBTC @ ${ob['current']:,.2f}\n"
                 msg += f"RSI: {rsi1h:.1f}/{rsi4h:.1f} | StochRSI: {stoch1h.iloc[-1]:.1f}\n"
                 if ob.get('best_sell'):
-                    msg += f"🎯 Best Sell Zone: ${ob['best_sell']:,}\n"
-                msg += f"Time: {timestamp}\n→ Reduce exposure on alts"
+                    msg += f"🎯 Best Sell: ${ob['best_sell']:,}\n"
+                msg += f"Time: {timestamp}\n→ Reduce alts"
                 send_message(msg)
-    except:
-        pass
+                last_signal_time = datetime.now()
+    except Exception as e:
+        logging.error(f"BTC signal error: {e}")
 
-    # PAXG Strategy
+    # PAXG
     try:
         df1h_p = fetch_ohlcv("PAXG/USDT", "1h")
         df4h_p = fetch_ohlcv("PAXG/USDT", "4h")
@@ -119,18 +123,19 @@ def check_signals():
             if (rsi1h_p > PAXG_RSI_THRESHOLD and rsi4h_p > PAXG_RSI_THRESHOLD and
                 stoch1h_p.iloc[-1] > PAXG_STOCH_THRESHOLD and stoch4h_p.iloc[-1] > PAXG_STOCH_THRESHOLD):
                 ob_p = analyze_order_book("PAXG/USDT")
-                msg = f"🟡 <b>PAXG SELL SIGNAL (Gold)</b>\nPAXG @ ${ob_p['current']:,.2f}\n"
+                msg = f"🟡 <b>PAXG SELL SIGNAL</b>\nPAXG @ ${ob_p['current']:,.2f}\n"
                 msg += f"RSI: {rsi1h_p:.1f}/{rsi4h_p:.1f} | StochRSI: {stoch1h_p.iloc[-1]:.1f}\n"
                 if ob_p.get('best_sell'):
-                    msg += f"🎯 Best Sell Zone: ${ob_p['best_sell']:,}\n"
+                    msg += f"🎯 Best Sell: ${ob_p['best_sell']:,}\n"
                 msg += f"Time: {timestamp}\n→ Take profit on PAXG"
                 send_message(msg)
-    except:
-        pass
+                last_signal_time = datetime.now()
+    except Exception as e:
+        logging.error(f"PAXG signal error: {e}")
 
-# ================== COMMANDS ==================
+# Commands
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Bot Started!", parse_mode='HTML')
+    await update.message.reply_text("🤖 Bot Started!")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = "🟢 Running" if bot_running else "⭕ Paused"
@@ -148,38 +153,8 @@ async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def check_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 Fetching current conditions...")
-
-    msg = f"<b>Live Market Conditions</b>\n{datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
-
-    # BTC Report
-    try:
-        df1h = fetch_ohlcv("BTC/USDT", "1h")
-        df4h = fetch_ohlcv("BTC/USDT", "4h")
-        if df1h and df4h:
-            rsi1h = rsi(df1h['close']).iloc[-1]
-            rsi4h = rsi(df4h['close']).iloc[-1]
-            stoch1h, _ = stoch_rsi(df1h['close'])
-            stoch4h, _ = stoch_rsi(df4h['close'])
-            price = df1h['close'].iloc[-1]
-            msg += f"<b>BTC</b>\nPrice: ${price:,.2f}\nRSI: {rsi1h:.1f}/{rsi4h:.1f}\nStochRSI: {stoch1h.iloc[-1]:.1f}/{stoch4h.iloc[-1]:.1f}\n\n"
-    except:
-        msg += "BTC: Error fetching data\n\n"
-
-    # PAXG Report
-    try:
-        df1h_p = fetch_ohlcv("PAXG/USDT", "1h")
-        df4h_p = fetch_ohlcv("PAXG/USDT", "4h")
-        if df1h_p and df4h_p:
-            rsi1h_p = rsi(df1h_p['close']).iloc[-1]
-            rsi4h_p = rsi(df4h_p['close']).iloc[-1]
-            stoch1h_p, _ = stoch_rsi(df1h_p['close'])
-            stoch4h_p, _ = stoch_rsi(df4h_p['close'])
-            price_p = df1h_p['close'].iloc[-1]
-            msg += f"<b>PAXG</b>\nPrice: ${price_p:,.2f}\nRSI: {rsi1h_p:.1f}/{rsi4h_p:.1f}\nStochRSI: {stoch1h_p.iloc[-1]:.1f}/{stoch4h_p.iloc[-1]:.1f}"
-    except:
-        msg += "PAXG: Error fetching data"
-
-    await update.message.reply_text(msg, parse_mode='HTML')
+    # For now, just trigger check_signals
+    check_signals()
 
 def main():
     scheduler.add_job(check_signals, 'interval', minutes=CHECK_INTERVAL_MIN)
